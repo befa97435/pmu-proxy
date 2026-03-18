@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -7,43 +8,127 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
+PMU_BASE = "https://offline.turfinfo.api.pmu.fr/rest/client/7"
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
 @app.route("/")
 def index():
-    return jsonify({"status": "ok", "message": "PMU Proxy actif"})
+    return jsonify({"status": "ok", "message": "PMU Proxy actif", "ia": bool(ANTHROPIC_KEY)})
 
 @app.route("/programme")
 def programme():
     date_param = request.args.get("date", "")
     try:
-        if date_param:
-            dt = datetime.strptime(date_param, "%Y-%m-%d")
-        else:
-            dt = datetime.today()
+        dt = datetime.strptime(date_param, "%Y-%m-%d") if date_param else datetime.today()
         date_pmu = dt.strftime("%d%m%Y")
     except:
         return jsonify({"error": "Format invalide", "courses": []})
-
     try:
-        url = f"https://offline.turfinfo.api.pmu.fr/rest/client/7/programme/{date_pmu}"
-        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        data = resp.json()
-        courses = []
+        resp = requests.get(f"{PMU_BASE}/programme/{date_pmu}", timeout=10,
+                           headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        if resp.status_code != 200:
+            return jsonify({"error": f"PMU {resp.status_code}", "courses": []})
+        courses = extraire_courses(resp.json())
+        return jsonify({"date": dt.strftime("%Y-%m-%d"), "courses": courses})
+    except Exception as e:
+        return jsonify({"error": str(e), "courses": []})
+
+def extraire_courses(data):
+    courses = []
+    try:
         for reunion in data.get("programme", {}).get("reunions", []):
-            nr = reunion.get("numOfficiel", "?")
-            hippo = reunion.get("hippodrome", {}).get("libelleCourt", "—")
+            nr = reunion.get("numOfficiel", reunion.get("numReunion", "?"))
+            hippo = reunion.get("hippodrome", {}).get("libelleCourt", "")
             disc = (reunion.get("disciplinesMeres") or ["plat"])[0].lower()
             type_c = "trot" if "trot" in disc else "obstacle" if any(x in disc for x in ["obstacle","haies","cross"]) else "plat"
             for c in reunion.get("courses", []):
-                nc = c.get("numOrdre", "?")
+                nc = c.get("numOrdre", c.get("numCourse", "?"))
                 partants = c.get("nombreDeclaresPartants", 0)
                 libelle = c.get("libelle", "")
                 quinte = any("quinte" in str(p.get("codePari","")).lower() for p in c.get("paris",[]))
                 if "quinté" in libelle.lower() or "quinte" in libelle.lower():
                     quinte = True
-                courses.append({"reunion": f"R{nr}", "course": f"C{nc}", "hippo": hippo, "partants": partants, "type": type_c, "quinte": quinte, "libelle": libelle})
-        return jsonify({"date": dt.strftime("%Y-%m-%d"), "courses": courses})
+                courses.append({"reunion": f"R{nr}", "course": f"C{nc}", "hippo": hippo,
+                               "partants": partants, "type": type_c, "quinte": quinte, "libelle": libelle})
     except Exception as e:
-        return jsonify({"error": str(e), "courses": []})
+        print(f"Erreur: {e}")
+    return courses
+
+@app.route("/ia/pronostics", methods=["POST"])
+def ia_pronostics():
+    if not ANTHROPIC_KEY:
+        return jsonify({"error": "Cle API manquante - configurez ANTHROPIC_API_KEY dans Railway Variables"}), 500
+    body = request.get_json()
+    course = body.get("course", "")
+    hippo = body.get("hippo", "")
+    date = body.get("date", datetime.today().strftime("%Y-%m-%d"))
+    prompt = (f"Expert PMU. Date: {date}. Recherche pronostics Quinte+ course {course} hippodrome {hippo}. "
+              "Sites: Geny.com, Paris-Turf, ZEturf, Equidia, Turf-fr. Donne 8 chevaux par site. "
+              'JSON UNIQUEMENT: {"sites":[{"nom":"Geny","numeros":[1,5,7,11,3,8,12,14]},{"nom":"Paris-Turf","numeros":[2,4,8,11,14,1,6,9]},{"nom":"ZEturf","numeros":[1,3,7,9,12,5,10,15]},{"nom":"Equidia","numeros":[5,6,8,11,15,2,7,13]},{"nom":"Turf-fr","numeros":[1,4,7,10,13,3,8,11]}]}')
+    try:
+        result = call_claude_web(prompt)
+        data = json.loads(result.replace("```json","").replace("```","").strip())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ia/stats", methods=["POST"])
+def ia_stats():
+    if not ANTHROPIC_KEY:
+        return jsonify({"error": "Cle API manquante - configurez ANTHROPIC_API_KEY dans Railway Variables"}), 500
+    body = request.get_json()
+    course = body.get("course", "")
+    hippo = body.get("hippo", "")
+    nb = body.get("nb", 16)
+    date = body.get("date", datetime.today().strftime("%Y-%m-%d"))
+    prompt = (f"Expert PMU. Date: {date}. Recherche fiches partants course {course} hippodrome {hippo}. "
+              f"Geny.com et Paris-Turf, {nb} chevaux. Nom, jockey, ecurie, stats victoires, forme. "
+              '{"partants":[{"num":1,"cheval":"Nom","cavalier":"Jockey","ecurie":"Ecurie","vicPct":20,"place3Pct":45,"forme":4,"poidsH":0,"notes":"Forme"}]}')
+    try:
+        result = call_claude_web(prompt)
+        data = json.loads(result.replace("```json","").replace("```","").strip())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/ia/extraire", methods=["POST"])
+def ia_extraire():
+    if not ANTHROPIC_KEY:
+        return jsonify({"error": "Cle API manquante"}), 500
+    body = request.get_json()
+    texte = body.get("texte", "")[:3000]
+    type_e = body.get("type", "prono")
+    site = body.get("site", "")
+    if type_e == "prono":
+        prompt = (f"Analyse texte site {site}, extrait numeros chevaux Quinte+. "
+                  '{"numeros":[1,2,3,4,5,6,7,8],"commentaire":"..."} Texte: ' + texte)
+    else:
+        prompt = ('Analyse fiche cheval/jockey/ecurie, extrait stats. '
+                  '{"num":0,"cheval":"","cavalier":"","ecurie":"","vicPct":0,"place3Pct":0,"forme":3,"poidsH":0,"notes":"..."} Texte: ' + texte)
+    try:
+        result = call_claude(prompt)
+        data = json.loads(result.replace("```json","").replace("```","").strip())
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def call_claude_web(prompt):
+    resp = requests.post("https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
+              "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+              "messages": [{"role": "user", "content": prompt}]}, timeout=30)
+    data = resp.json()
+    texts = [b for b in data.get("content", []) if b.get("type") == "text"]
+    if not texts: raise Exception("Pas de reponse")
+    return texts[-1]["text"]
+
+def call_claude(prompt):
+    resp = requests.post("https://api.anthropic.com/v1/messages",
+        headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        json={"model": "claude-sonnet-4-20250514", "max_tokens": 1000,
+              "messages": [{"role": "user", "content": prompt}]}, timeout=30)
+    return resp.json()["content"][0]["text"]
 
 port = int(os.environ.get("PORT", 8080))
 if __name__ == "__main__":
