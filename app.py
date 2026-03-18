@@ -1,12 +1,11 @@
-from flask import Flask, jsonify, request
-from flask_cors import CORS
+import os
 import requests
 from datetime import datetime
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
-
-PMU_BASE = "https://offline.turfinfo.api.pmu.fr/rest/client/7"
 
 @app.route("/")
 def index():
@@ -21,69 +20,31 @@ def programme():
         else:
             dt = datetime.today()
         date_pmu = dt.strftime("%d%m%Y")
-    except Exception:
-        return jsonify({"error": "Format invalide. Utilisez YYYY-MM-DD"}), 400
+    except:
+        return jsonify({"error": "Format invalide", "courses": []})
 
-    url = f"{PMU_BASE}/programme/{date_pmu}"
     try:
-        resp = requests.get(url, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        })
-        if resp.status_code != 200:
-            return jsonify({"error": f"PMU a répondu {resp.status_code}", "courses": []}), 200
-
+        url = f"https://offline.turfinfo.api.pmu.fr/rest/client/7/programme/{date_pmu}"
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = resp.json()
-        courses = extraire_courses(data)
-        return jsonify({"date": dt.strftime("%Y-%m-%d"), "courses": courses})
-
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Timeout PMU", "courses": []}), 200
-    except Exception as e:
-        return jsonify({"error": str(e), "courses": []}), 200
-
-
-def extraire_courses(data):
-    courses = []
-    try:
-        reunions = data.get("programme", {}).get("reunions", [])
-        for reunion in reunions:
-            num_reunion = reunion.get("numOfficiel", reunion.get("numReunion", "?"))
+        courses = []
+        for reunion in data.get("programme", {}).get("reunions", []):
+            nr = reunion.get("numOfficiel", "?")
             hippo = reunion.get("hippodrome", {}).get("libelleCourt", "—")
-            discipline = reunion.get("disciplinesMeres", [""])[0] if reunion.get("disciplinesMeres") else ""
-            type_map = {
-                "PLAT": "plat", "TROT": "trot",
-                "TROT_ATTELE": "trot", "TROT_MONTE": "trot",
-                "OBSTACLE": "obstacle", "CROSS": "obstacle", "HAIES": "obstacle",
-            }
-            type_course = type_map.get(discipline.upper(), "plat")
-            for course in reunion.get("courses", []):
-                num_course = course.get("numOrdre", course.get("numCourse", "?"))
-                partants = course.get("nombreDeclaresPartants", 0)
-                libelle = course.get("libelle", "")
-                is_quinte = False
-                for p in course.get("paris", []):
-                    code = str(p.get("codePari", "")).upper()
-                    if "QUINTE" in code or code == "E_QUINTE":
-                        is_quinte = True
-                        break
+            disc = (reunion.get("disciplinesMeres") or ["plat"])[0].lower()
+            type_c = "trot" if "trot" in disc else "obstacle" if any(x in disc for x in ["obstacle","haies","cross"]) else "plat"
+            for c in reunion.get("courses", []):
+                nc = c.get("numOrdre", "?")
+                partants = c.get("nombreDeclaresPartants", 0)
+                libelle = c.get("libelle", "")
+                quinte = any("quinte" in str(p.get("codePari","")).lower() for p in c.get("paris",[]))
                 if "quinté" in libelle.lower() or "quinte" in libelle.lower():
-                    is_quinte = True
-                courses.append({
-                    "reunion": f"R{num_reunion}",
-                    "course": f"C{num_course}",
-                    "hippo": hippo,
-                    "partants": partants,
-                    "type": type_course,
-                    "quinte": is_quinte,
-                    "libelle": libelle
-                })
+                    quinte = True
+                courses.append({"reunion": f"R{nr}", "course": f"C{nc}", "hippo": hippo, "partants": partants, "type": type_c, "quinte": quinte, "libelle": libelle})
+        return jsonify({"date": dt.strftime("%Y-%m-%d"), "courses": courses})
     except Exception as e:
-        print(f"Erreur extraction: {e}")
-    return courses
+        return jsonify({"error": str(e), "courses": []})
 
-
-import os
+port = int(os.environ.get("PORT", 8080))
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=False, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
