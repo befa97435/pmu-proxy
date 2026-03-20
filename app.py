@@ -176,7 +176,6 @@ def ia_extraire():
 #  HELPERS
 # ═══════════════════════
 def call_claude_with_search(prompt):
-    """Appel Claude avec recherche web"""
     headers = {**ANTHROPIC_HEADERS, "x-api-key": ANTHROPIC_KEY}
     payload = {
         "model": "claude-opus-4-5",
@@ -185,13 +184,17 @@ def call_claude_with_search(prompt):
         "messages": [{"role": "user", "content": prompt}]
     }
     resp = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=60)
+    print(f"STATUS: {resp.status_code}")
+    print(f"RESPONSE: {resp.text[:500]}")
     data = resp.json()
     if resp.status_code != 200:
         raise Exception(f"Anthropic {resp.status_code}: {data.get('error', {}).get('message', str(data))}")
     texts = [b["text"] for b in data.get("content", []) if b.get("type") == "text"]
     if not texts:
-        raise Exception("Aucune reponse texte de l IA")
+        raise Exception("Aucune reponse texte")
     return texts[-1]
+        
+        
 
 def call_claude_simple(prompt):
     """Appel Claude sans recherche web"""
