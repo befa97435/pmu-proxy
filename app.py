@@ -57,39 +57,61 @@ def extraire_courses(data):
 @app.route("/ia/pronostics", methods=["POST"])
 def ia_pronostics():
     if not ANTHROPIC_KEY:
-        return jsonify({"error": "Cle API manquante - configurez ANTHROPIC_API_KEY dans Railway Variables"}), 500
-    body = request.get_json()
+        return jsonify({"error": "Cle API manquante"}), 500
+    body = request.get_json() or {}
     course = body.get("course", "")
     hippo = body.get("hippo", "")
     date = body.get("date", datetime.today().strftime("%Y-%m-%d"))
-    prompt = (f"Expert PMU. Date: {date}. Recherche pronostics Quinte+ course {course} hippodrome {hippo}. "
-              "Sites: Geny.com, Paris-Turf, ZEturf, Equidia, Turf-fr. Donne 8 chevaux par site. "
-              'JSON UNIQUEMENT: {"sites":[{"nom":"Geny","numeros":[1,5,7,11,3,8,12,14]},{"nom":"Paris-Turf","numeros":[2,4,8,11,14,1,6,9]},{"nom":"ZEturf","numeros":[1,3,7,9,12,5,10,15]},{"nom":"Equidia","numeros":[5,6,8,11,15,2,7,13]},{"nom":"Turf-fr","numeros":[1,4,7,10,13,3,8,11]}]}')
+    prompt = (f"Expert PMU. Date: {date}. Recherche pronostics Quinte+ "
+              f"course {course} hippodrome {hippo}. "
+              "Sites: Geny.com, Paris-Turf, ZEturf, Equidia, Turf-fr. "
+              "Donne 8 chevaux par site. "
+              'JSON: {"sites":[{"nom":"Geny","numeros":[1,2,3,4,5,6,7,8]},'
+              '{"nom":"Paris-Turf","numeros":[1,2,3,4,5,6,7,8]},'
+              '{"nom":"ZEturf","numeros":[1,2,3,4,5,6,7,8]},'
+              '{"nom":"Equidia","numeros":[1,2,3,4,5,6,7,8]},'
+              '{"nom":"Turf-fr","numeros":[1,2,3,4,5,6,7,8]}]}')
     try:
         result = call_claude_web(prompt)
-        data = json.loads(result.replace("```json","").replace("```","").strip())
+        clean = result.replace("```json","").replace("```","").strip()
+        # Chercher le JSON dans la réponse
+        import re
+        match = re.search(r'\{.*\}', clean, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+        else:
+            data = json.loads(clean)
         return jsonify(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "details": result if 'result' in dir() else ""}), 500
 
 @app.route("/ia/stats", methods=["POST"])
 def ia_stats():
     if not ANTHROPIC_KEY:
-        return jsonify({"error": "Cle API manquante - configurez ANTHROPIC_API_KEY dans Railway Variables"}), 500
-    body = request.get_json()
+        return jsonify({"error": "Cle API manquante"}), 500
+    body = request.get_json() or {}
     course = body.get("course", "")
     hippo = body.get("hippo", "")
     nb = body.get("nb", 16)
     date = body.get("date", datetime.today().strftime("%Y-%m-%d"))
-    prompt = (f"Expert PMU. Date: {date}. Recherche fiches partants course {course} hippodrome {hippo}. "
-              f"Geny.com et Paris-Turf, {nb} chevaux. Nom, jockey, ecurie, stats victoires, forme. "
-              '{"partants":[{"num":1,"cheval":"Nom","cavalier":"Jockey","ecurie":"Ecurie","vicPct":20,"place3Pct":45,"forme":4,"poidsH":0,"notes":"Forme"}]}')
+    prompt = (f"Expert PMU. Date: {date}. Recherche fiches partants "
+              f"course {course} hippodrome {hippo}. "
+              f"Geny.com et Paris-Turf, {nb} chevaux. "
+              "Nom, jockey, ecurie, stats victoires, forme. "
+              '{"partants":[{"num":1,"cheval":"Nom","cavalier":"Jockey",'
+              '"ecurie":"Ecurie","vicPct":20,"place3Pct":45,"forme":4,"poidsH":0}]}')
     try:
         result = call_claude_web(prompt)
-        data = json.loads(result.replace("```json","").replace("```","").strip())
+        clean = result.replace("```json","").replace("```","").strip()
+        import re
+        match = re.search(r'\{.*\}', clean, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+        else:
+            data = json.loads(clean)
         return jsonify(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "details": result if 'result' in dir() else ""}), 500
 
 @app.route("/ia/extraire", methods=["POST"])
 def ia_extraire():
